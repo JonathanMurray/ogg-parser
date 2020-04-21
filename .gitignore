@@ -1,0 +1,8 @@
+*.iml
+.idea
+
+__pycache__
+
+*.ogg
+*.mp4
+outdir
