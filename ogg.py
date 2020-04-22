@@ -52,7 +52,7 @@ def skip(file, n_bytes: int):
 
 class PageHeader:
   def __init__(self, version, header_type_flag, absolute_granule_position, stream_serial_number, page_sequence_number,
-      page_checksum, segment_table, header_byte_length, packet_sizes):
+      page_checksum, segment_table, header_byte_length, packet_sizes, page_content_length):
     # Raw data found in the header
     self.version: int = version
     self.header_type_flag = header_type_flag
@@ -64,6 +64,7 @@ class PageHeader:
 
     # Derived from the segment table
     self.packet_sizes: List[int] = packet_sizes
+    self.page_content_length: int = page_content_length
 
     # Byte length of the header
     self.header_byte_length: int = header_byte_length
@@ -167,22 +168,12 @@ class OggParser:
         stream_parser = self.stream_parsers[page_header.stream_serial_number]
         stream_parser.last_absolute_granule_position = page_header.absolute_granule_position
 
-      page_content_length = 0  # the size of the page minus the header itself
-      packet_sizes = []
-      packet_size_accumulator = 0
-      for lacing_value in page_header.segment_table:
-        packet_size_accumulator += lacing_value
-        if lacing_value < 255:
-          packet_sizes.append(packet_size_accumulator)
-          packet_size_accumulator = 0
-        page_content_length += lacing_value
-
       # Here we hand over control to the consumer
       yield Page(page_header, current_page_header_offset, page_header.header_byte_length,
-                 page_content_length)
+                 page_header.page_content_length)
 
       # Here we're back in control, so we seek to the start of the next page header
-      current_page_header_offset += page_header.header_byte_length + page_content_length
+      current_page_header_offset += page_header.header_byte_length + page_header.page_content_length
       debug(log_tag, "Seeking to next page header. Offset: %i" % current_page_header_offset)
       file.seek(current_page_header_offset, os.SEEK_SET)
 
@@ -210,6 +201,7 @@ class OggParser:
 
     segment_table = []
 
+    page_content_length = 0
     packet_sizes = []
     packet_size_accumulator = 0
 
@@ -218,13 +210,14 @@ class OggParser:
       bytes_read += 1
       segment_table.append(lacing_value)
 
+      page_content_length += lacing_value
       packet_size_accumulator += lacing_value
       if lacing_value < 255:
         packet_sizes.append(packet_size_accumulator)
         packet_size_accumulator = 0
 
     return PageHeader(version, header_type_flag, absolute_granule_position, stream_serial_number, page_sequence_number,
-                      page_checksum, segment_table, bytes_read, packet_sizes)
+                      page_checksum, segment_table, bytes_read, packet_sizes, page_content_length)
 
 
 def write_page_header(file, page_header: PageHeader):
