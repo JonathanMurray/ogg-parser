@@ -18,7 +18,7 @@ def multiply_sample_rate(input_file_name: str, output_file_name: str, multiplier
         content_offset = page.byte_offset + page.header_byte_length
         stream_parser = parser.stream_parsers[page.header.stream_serial_number]
 
-        ogg.write_page_header(output_file, page.header)
+        page.header.write_to_file(output_file)
 
         if has_written_identification_header:
           # We have already written the important header. Just copy page blindly now
@@ -27,7 +27,7 @@ def multiply_sample_rate(input_file_name: str, output_file_name: str, multiplier
 
         # parse packets until we have found the identification header
         if stream_parser.identification_header is None:
-          for packet in stream_parser.parse_page_content(input_file, content_offset, page.header.packet_sizes):
+          for offset, packet in stream_parser.get_packets_in_page(input_file, content_offset, page.header.packet_sizes):
             if isinstance(packet, IdentificationHeaderPacket):
               rewritten_packet = IdentificationHeaderPacket(
                   packet.channels, int(packet.sample_rate * multiplier), packet.bitrate_max, packet.bitrate_nominal,

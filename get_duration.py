@@ -13,7 +13,7 @@ def get_duration(file_name: str):
 
       # The identification header packet contains the sample_rate which we need to calculate duration
       if stream_parser.identification_header is None:
-        for _ in stream_parser.parse_page_content(file, content_offset, page.header.packet_sizes):
+        for _ in stream_parser.get_packets_in_page(file, content_offset, page.header.packet_sizes):
           pass
 
   for (stream_serial_number, stream_parser) in parser.stream_parsers.items():

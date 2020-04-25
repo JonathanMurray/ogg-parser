@@ -1,8 +1,10 @@
+from __future__ import annotations  # to allow type references to self
+
 import os
-from typing import List, Dict, Iterator, Optional
+from typing import List, Dict, Iterator, Optional, Tuple
 
 MAX_PARSED_PAGES = 100_000
-DEBUG = False
+DEBUG = True
 
 
 def debug(label: str, message: str):
@@ -51,11 +53,11 @@ def skip(file, n_bytes: int):
 
 
 class PageHeader:
-  def __init__(self, version, header_type_flag, absolute_granule_position, stream_serial_number, page_sequence_number,
-      page_checksum, segment_table, header_byte_length, packet_sizes, page_content_length):
+  def __init__(self, version, fresh_packet, beginning_of_stream, end_of_stream, absolute_granule_position,
+      stream_serial_number, page_sequence_number, page_checksum, segment_table, header_byte_length, packet_sizes,
+      page_content_length):
     # Raw data found in the header
     self.version: int = version
-    self.header_type_flag = header_type_flag
     self.absolute_granule_position: int = absolute_granule_position
     self.stream_serial_number: int = stream_serial_number
     self.page_sequence_number: int = page_sequence_number
@@ -66,123 +68,18 @@ class PageHeader:
     self.packet_sizes: List[int] = packet_sizes
     self.page_content_length: int = page_content_length
 
+    # Derived from header type flag
+    self.fresh_packet = fresh_packet
+    self.beginning_of_stream = beginning_of_stream
+    self.end_of_stream = end_of_stream
+
     # Byte length of the header
     self.header_byte_length: int = header_byte_length
 
-  def __repr__(self):
-    return "(Page %i in '%s'. %i packets)" \
-           % (self.page_sequence_number, self.stream_serial_number, len(self.packet_sizes))
-
-
-class Page:
-  def __init__(self, page_header: PageHeader, byte_offset, header_byte_length, content_byte_length):
-    self.header: PageHeader = page_header
-    self.byte_offset: int = byte_offset
-    self.header_byte_length: int = header_byte_length
-    self.content_byte_length: int = content_byte_length
-
-  def __repr__(self):
-    return "(%s, offset: %i, header length: %i, content length: %i)" % \
-           (self.header, self.byte_offset, self.header_byte_length, self.content_byte_length)
-
-
-class VorbisPacket:
-  pass
-
-
-class AudioPacket(VorbisPacket):
-
-  def __init__(self, packet_length):
-    self.packet_length = packet_length
-
-  def __repr__(self):
-    return "Audio packet (length: %i)" % self.packet_length
-
-
-class SetupHeaderPacket(VorbisPacket):
-
-  def __init__(self, packet_length):
-    self.packet_length = packet_length
-
-  def __repr__(self):
-    return "Setup header (length: %i)" % self.packet_length
-
-
-class IdentificationHeaderPacket(VorbisPacket):
-  def __init__(self, channels, sample_rate, bitrate_max, bitrate_nominal, bitrate_min, block_size_0_and_1,
-      packet_length):
-    self.channels: int = channels
-    self.sample_rate: int = sample_rate
-    self.bitrate_max: int = bitrate_max
-    self.bitrate_nominal: int = bitrate_nominal
-    self.bitrate_min: int = bitrate_min
-    self.block_size_0_and_1: int = block_size_0_and_1
-    self.packet_length: int = packet_length
-
-  def __repr__(self):
-    return "Identification header (%iHz, %i channel(s), %ikb/s, length: %i)" \
-           % (self.sample_rate, self.channels, self.bitrate_nominal // 1000, self.packet_length)
-
-
-class CommentHeaderPacket(VorbisPacket):
-  def __init__(self, vendor, comments, packet_length):
-    self.vendor: str = vendor
-    self.comments: List[str] = comments
-    self.packet_length: int = packet_length
-
-  def __repr__(self):
-    return "Comment header (vendor: %s, comments: %s, length: %i)" % (self.vendor, self.comments, self.packet_length)
-
-
-class OggParser:
-
-  def __init__(self):
-    self.stream_parsers: Dict[int, StreamParser] = {}
-
-  def parse_ogg_file(self, file) -> Iterator[Page]:
-    log_tag = "parse_ogg_file()"
-
-    current_page_header_offset = 0
-
-    for page_index in range(MAX_PARSED_PAGES):
-
-      page_header = self._parse_page_header(file)
-
-      if page_header is None:
-        # end of file
-        return
-
-      fresh_packet = page_header.header_type_flag & 1
-      first_page_of_logical_bitstream = page_header.header_type_flag & 2
-      last_page_of_logical_bitstream = page_header.header_type_flag & 4
-
-      if fresh_packet:
-        debug(log_tag, "fresh packet")
-      if first_page_of_logical_bitstream:
-        debug(log_tag,
-              "Logical bitstream %s starting at page %i" % (page_header.stream_serial_number, page_index))
-        self.stream_parsers[page_header.stream_serial_number] = StreamParser()
-      if last_page_of_logical_bitstream:
-        debug(log_tag,
-              "Logical bitstream %s ending at page %i" % (page_header.stream_serial_number, page_index))
-        stream_parser = self.stream_parsers[page_header.stream_serial_number]
-        stream_parser.last_absolute_granule_position = page_header.absolute_granule_position
-
-      # Here we hand over control to the consumer
-      yield Page(page_header, current_page_header_offset, page_header.header_byte_length,
-                 page_header.page_content_length)
-
-      # Here we're back in control, so we seek to the start of the next page header
-      current_page_header_offset += page_header.header_byte_length + page_header.page_content_length
-      debug(log_tag, "Seeking to next page header. Offset: %i" % current_page_header_offset)
-      file.seek(current_page_header_offset, os.SEEK_SET)
-
-    print("ERROR: Processed %i pages without reaching end of file!" % MAX_PARSED_PAGES)
-
   @staticmethod
-  def _parse_page_header(file) -> Optional[PageHeader]:
+  def parse(file) -> Optional[PageHeader]:
 
-    log_tag = "_parse_page_header()"
+    log_tag = "PageHeader._parse()"
 
     capture_pattern = read_bytes(file, 4)
     if capture_pattern == b'':
@@ -192,6 +89,9 @@ class OggParser:
       raise Exception("Expected capture pattern but got: %s" % capture_pattern)
     version = read_i8(file)
     header_type_flag = read_i8(file)
+    fresh_packet = header_type_flag & 1
+    beginning_of_stream = header_type_flag & 2
+    end_of_stream = header_type_flag & 4
     absolute_granule_position = read_i64(file)
     stream_serial_number = read_i32(file)
     page_sequence_number = read_i32(file)
@@ -216,21 +116,144 @@ class OggParser:
         packet_sizes.append(packet_size_accumulator)
         packet_size_accumulator = 0
 
-    return PageHeader(version, header_type_flag, absolute_granule_position, stream_serial_number, page_sequence_number,
+    return PageHeader(version, fresh_packet, beginning_of_stream, end_of_stream, absolute_granule_position,
+                      stream_serial_number, page_sequence_number,
                       page_checksum, segment_table, bytes_read, packet_sizes, page_content_length)
 
+  def write_to_file(self, file):
+    file.write(b"OggS")
+    write_i8(file, self.version)
+    header_type_flag = 0
+    if self.fresh_packet:
+      header_type_flag |= 1
+    if self.beginning_of_stream:
+      header_type_flag |= 2
+    if self.end_of_stream:
+      header_type_flag |= 4
+    write_i8(file, header_type_flag)
+    write_i64(file, self.absolute_granule_position)
+    write_i32(file, self.stream_serial_number)
+    write_i32(file, self.page_sequence_number)
+    write_i32(file, self.page_checksum)
+    write_i8(file, len(self.segment_table))
+    for lacing_value in self.segment_table:
+      write_i8(file, lacing_value)
 
-def write_page_header(file, page_header: PageHeader):
-  file.write(b"OggS")
-  write_i8(file, page_header.version)
-  write_i8(file, page_header.header_type_flag)
-  write_i64(file, page_header.absolute_granule_position)
-  write_i32(file, page_header.stream_serial_number)
-  write_i32(file, page_header.page_sequence_number)
-  write_i32(file, page_header.page_checksum)
-  write_i8(file, len(page_header.segment_table))
-  for lacing_value in page_header.segment_table:
-    write_i8(file, lacing_value)
+  def copy(self) -> PageHeader:
+    return PageHeader(
+        self.version, self.fresh_packet, self.beginning_of_stream, self.end_of_stream, self.absolute_granule_position,
+        self.stream_serial_number, self.page_sequence_number, self.page_checksum, self.segment_table,
+        self.header_byte_length, self.packet_sizes, self.page_content_length)
+
+  def __repr__(self):
+    return "(Page %i in '%s'. %i packets)" \
+           % (self.page_sequence_number, self.stream_serial_number, len(self.packet_sizes))
+
+
+class Page:
+  def __init__(self, page_header: PageHeader, byte_offset, header_byte_length, content_byte_length):
+    self.header: PageHeader = page_header
+    self.byte_offset: int = byte_offset
+    self.header_byte_length: int = header_byte_length
+    self.content_byte_length: int = content_byte_length
+
+  def __repr__(self):
+    return "(%s, offset: %i, header length: %i, content length: %i)" % \
+           (self.header, self.byte_offset, self.header_byte_length, self.content_byte_length)
+
+
+class VorbisPacket:
+  def __init__(self, packet_length):
+    self.packet_length = packet_length
+
+
+class AudioPacket(VorbisPacket):
+
+  def __init__(self, packet_length):
+    super().__init__(packet_length)
+
+  def __repr__(self):
+    return "Audio packet (length: %i)" % self.packet_length
+
+
+class SetupHeaderPacket(VorbisPacket):
+
+  def __init__(self, packet_length):
+    super().__init__(packet_length)
+
+  def __repr__(self):
+    return "Setup header (length: %i)" % self.packet_length
+
+
+class IdentificationHeaderPacket(VorbisPacket):
+  def __init__(self, channels, sample_rate, bitrate_max, bitrate_nominal, bitrate_min, block_size_0_and_1,
+      packet_length):
+    super().__init__(packet_length)
+    self.channels: int = channels
+    self.sample_rate: int = sample_rate
+    self.bitrate_max: int = bitrate_max
+    self.bitrate_nominal: int = bitrate_nominal
+    self.bitrate_min: int = bitrate_min
+    self.block_size_0_and_1: int = block_size_0_and_1
+
+  def __repr__(self):
+    return "Identification header (%iHz, %i channel(s), %ikb/s, length: %i)" \
+           % (self.sample_rate, self.channels, self.bitrate_nominal // 1000, self.packet_length)
+
+
+class CommentHeaderPacket(VorbisPacket):
+  def __init__(self, vendor, comments, packet_length):
+    super().__init__(packet_length)
+    self.vendor: str = vendor
+    self.comments: List[str] = comments
+
+  def __repr__(self):
+    return "Comment header (vendor: %s, comments: %s, length: %i)" % (self.vendor, self.comments, self.packet_length)
+
+
+class OggParser:
+
+  def __init__(self):
+    self.stream_parsers: Dict[int, StreamParser] = {}
+    self.num_pages_parsed = 0
+
+  def parse_ogg_file(self, file) -> Iterator[Page]:
+    log_tag = "parse_ogg_file()"
+
+    current_page_header_offset = 0
+
+    for page_index in range(MAX_PARSED_PAGES):
+
+      page_header = PageHeader.parse(file)
+
+      if page_header is None:
+        # end of file
+        return
+
+      if page_header.fresh_packet:
+        debug(log_tag, "fresh packet")
+      if page_header.beginning_of_stream:
+        debug(log_tag,
+              "Logical bitstream %s starting at page %i" % (page_header.stream_serial_number, page_index))
+        self.stream_parsers[page_header.stream_serial_number] = StreamParser()
+      if page_header.end_of_stream:
+        debug(log_tag,
+              "Logical bitstream %s ending at page %i" % (page_header.stream_serial_number, page_index))
+        stream_parser = self.stream_parsers[page_header.stream_serial_number]
+        stream_parser.last_absolute_granule_position = page_header.absolute_granule_position
+
+      self.num_pages_parsed += 1
+
+      # Here we hand over control to the consumer
+      yield Page(page_header, current_page_header_offset, page_header.header_byte_length,
+                 page_header.page_content_length)
+
+      # Here we're back in control, so we seek to the start of the next page header
+      current_page_header_offset += page_header.header_byte_length + page_header.page_content_length
+      debug(log_tag, "Seeking to next page header. Offset: %i" % current_page_header_offset)
+      file.seek(current_page_header_offset, os.SEEK_SET)
+
+    print("ERROR: Processed %i pages without reaching end of file!" % MAX_PARSED_PAGES)
 
 
 def write_identification_header_packet(file, header: IdentificationHeaderPacket):
@@ -242,7 +265,7 @@ def write_identification_header_packet(file, header: IdentificationHeaderPacket)
   write_i32(file, header.bitrate_max)
   write_i32(file, header.bitrate_nominal)
   write_i32(file, header.bitrate_min)
-  write_i8(file, 184)  # block_size_0 and block_size_1
+  write_i8(file, header.block_size_0_and_1)  # block_size_0 and block_size_1
   write_i8(file, 1)  # framing_flag
 
 
@@ -261,14 +284,16 @@ class StreamParser:
     if self.last_absolute_granule_position is not None and self.identification_header is not None:
       return self.last_absolute_granule_position / self.identification_header.sample_rate
 
-  def parse_page_content(self, file, content_byte_offset: int, packet_sizes: List[int]) -> Iterator[VorbisPacket]:
-    log_tag = "parse_page_content()"
+  def get_packets_in_page(self, file, content_byte_offset: int, packet_sizes: List[int]) \
+      -> Iterator[Tuple[int, VorbisPacket]]:
+    log_tag = "get_packets_in_page()"
     debug(log_tag, "Parsing page content. Offset: %i" % content_byte_offset)
 
-    file.seek(content_byte_offset, os.SEEK_SET)
-
-    for packet_index, packet_size in enumerate(packet_sizes):
-      yield self._parse_packet(file, packet_size)
+    offset = content_byte_offset
+    for packet_size in packet_sizes:
+      file.seek(offset, os.SEEK_SET)
+      yield offset, self._parse_packet(file, packet_size)
+      offset += packet_size
 
     debug(log_tag, "Parsed page")
 
@@ -287,12 +312,15 @@ class StreamParser:
       if codec_identifier != b'vorbis':
         raise Exception("Unexpected codec identifier: %s" % codec_identifier)
       if packet_type == 1:
+        debug(log_tag, "identification header")
         packet = self._parse_identification_header(file, bytes_read)
         self.identification_header = packet
       elif packet_type == 3:
+        debug(log_tag, "comment header")
         packet = self._parse_comment_header(file, bytes_read)
         self.comment_header = packet
       elif packet_type == 5:
+        debug(log_tag, "setup header")
         packet = self._parse_setup_header(file, bytes_read, packet_size)
       else:
         raise Exception("Unexpected packet type: %s" % packet_type)

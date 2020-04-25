@@ -12,7 +12,7 @@ def print_comments(file_name: str):
       stream_parser = parser.stream_parsers[page.header.stream_serial_number]
 
       if stream_parser.comment_header is None:
-        for _ in stream_parser.parse_page_content(file, content_offset, page.header.packet_sizes):
+        for _ in stream_parser.get_packets_in_page(file, content_offset, page.header.packet_sizes):
           pass
 
   for stream_parser in parser.stream_parsers.values():
