@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import sys
 
-import ogg
-from ogg import OggParser, IdentificationHeaderPacket
+from io_util import read_bytes, write_bytes
+from ogg import OggParser
+from vorbis import IdentificationHeaderPacket
 
 
 def multiply_sample_rate(input_file_name: str, output_file_name: str, multiplier: float):
@@ -22,8 +23,8 @@ def multiply_sample_rate(input_file_name: str, output_file_name: str, multiplier
 
         if has_written_identification_header:
           # We have already written the important header. Just copy page blindly now
-          page_content = ogg.read_bytes(input_file, page.content_byte_length)
-          ogg.write_bytes(output_file, page_content)
+          page_content = read_bytes(input_file, page.content_byte_length)
+          write_bytes(output_file, page_content)
 
         # parse packets until we have found the identification header
         if stream_parser.identification_header is None:
@@ -32,7 +33,7 @@ def multiply_sample_rate(input_file_name: str, output_file_name: str, multiplier
               rewritten_packet = IdentificationHeaderPacket(
                   packet.channels, int(packet.sample_rate * multiplier), packet.bitrate_max, packet.bitrate_nominal,
                   packet.bitrate_min, packet.block_size_0_and_1, packet.packet_length)
-              ogg.write_identification_header_packet(output_file, rewritten_packet)
+              rewritten_packet.write_to_file(output_file)
               has_written_identification_header = True
             else:
               raise Exception("Got unexpected packet: %s" % packet)
